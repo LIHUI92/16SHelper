@@ -1,0 +1,409 @@
+---
+title: "TIV16sall"
+output: html_document
+ 
+  html_document: 
+    toc: yes
+    toc_float: True 
+  pdf_document: default
+---
+
+          
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r}
+library(vegan)
+library(picante)
+library(phyloseq)
+library(ggplot2)
+library(GUniFrac)
+library(plyr)
+library(ggpubr)
+library(microbiome)
+library(patchwork)
+library(nlme)
+library(DirichletMultinomial)
+library(reshape2)
+#create_physeq
+
+otu <- read.delim('C:/Users/lihui/Desktop/tiv16sall/feature-table.all.txt', row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE)
+otumat1<- t(otu)
+otumat2 <- Rarefy(otumat1, 10000)
+otumat<- t(otumat2[["otu.tab.rff"]])
+
+metadata<- read.csv('C:/Users/lihui/Desktop/tiv16sall/metadata_all.csv',header = T, sep = ',',row.names = 1)
+sub_metadata<- metadata[colnames(otumat),]
+
+taxmat<- read.table('C:/Users/lihui/Desktop/tiv16sall/tax.all.txt', header = T, sep = '\t', row.names = 1)
+taxmat<- as.matrix(taxmat)
+
+OTU = otu_table(otumat, taxa_are_rows = TRUE)
+TAX = tax_table(taxmat)
+sampledata<- sample_data(sub_metadata)
+
+physeq0 = merge_phyloseq(OTU, TAX)
+physeq = merge_phyloseq(physeq0, sampledata)
+physeq2 = merge_phyloseq(OTU, TAX, sampledata)
+identical(physeq, physeq2)
+
+#sub_group
+physeq.tib.fec<- subset_samples(physeq, type=="fecal"& national=="tibetan")
+physeq.tib.fec.p<-  prune_taxa(taxa_sums(physeq.tib.fec) > 0, physeq.tib.fec)
+
+## adiversity
+theme_set(theme_bw())
+time <- get_variable(physeq.tib.fec.p, "stage")
+sample_data(physeq.tib.fec.p)$time <- factor(time)
+col<- c('#66a61e','#e7298a','#7570b3',"#d95f02", "#3E3D39")
+my_comparisons <- list(c("stage1", "stage3"), c("stage4", "stage5"))
+p <- plot_richness(physeq.tib.fec.p, "time", measures="Shannon")
+
+p+ geom_boxplot(data=p$data, aes(x=stage, y=value, fill =stage))+ 
+    geom_jitter(width=0.2)+
+    scale_fill_manual(values=col)+
+    facet_grid(.~grade)+
+    stat_compare_means(comparisons = my_comparisons, paired = FALSE, label = "p.signif", color="red", method = "wilcox.test")+
+    labs(y= "Shannon Index", x="")
+
+#lmm
+col2<- c("#000000", "#CC0033",  "#003399", "#FF6600")
+ps<- ggplot(p$data, aes(x = stage, y = value, group= grade, colour=grade)) +
+    geom_point(alpha=0.6)+
+    scale_colour_manual(values=col2) +  
+    geom_smooth(size=2)+ 
+    geom_jitter(width=0.2)+
+    labs(y= "Shannon Index", x="")+
+  theme(axis.text.x =element_blank(), axis.text.y = element_text(size=12)) +
+    theme(legend.title = element_blank())+ 
+    theme(title=element_text(size=14,color="#4F4F4F"))+
+    theme(legend.position="top")
+
+data1<-  subset(p$data,grade %in% c("grade_17", "grade_18"))
+m1.nlme = lme(value ~ grade*stage,
+              random = ~ 1|student.id,
+              data = data1)
+anova(m1.nlme)
+
+data2<-  subset(p$data,stage %in% c("stage1", "stage2", "stage3"))
+
+m2.nlme = lme(value ~ grade*stage,
+              random = ~ 1|student.id,
+              data = data2)
+anova(m2.nlme)
+
+#ordination
+ dis_bray<- phyloseq::distance(physeq.tib.fec.p, "bray")
+ dis_bray.pcoa = ordinate(physeq.tib.fec.p, method="PCoA", distance=dis_bray)
+p1 <- plot_ordination(physeq.tib.fec.p, dis_bray.pcoa)
+pb<- ggplot(data=p1$data, aes(x=Axis.1, y=Axis.2, group =stage)) +
+    theme(panel.grid = element_line(color = 'gray', linetype = 2, size = 0.1), panel.background = element_rect(color = 'black', fill = 'transparent'), legend.key = element_rect(fill = 'transparent')) + #去掉背景框
+    geom_vline(xintercept = 0, color = 'gray', size = 0.4) + 
+    geom_hline(yintercept = 0, color = 'gray', size = 0.4) + 
+    geom_point(aes(color = stage), size = 2) + #可在这里修改点的透明度、大小
+    scale_color_manual(values = col) + #可在这里修改点的颜色
+    guides(fill = guide_legend(order = 1), shape = guide_legend(order = 2), color = guide_legend(order = 3))+ 
+    theme(axis.text.x = element_text(size=12),axis.text.y = element_text(size=12)) + # 设置x.y坐标上文本大小
+    labs(title="Bray_Curtis")+
+    theme(legend.position='none')+
+    theme(title=element_text(size=14,color="#4F4F4F"))+
+    theme(plot.title = element_text(hjust = 0.5))+ 
+    theme(legend.title = element_blank(),legend.text = element_text(colour="#4F4F4F", size = 12))+
+    labs(x = paste(p1[["labels"]][["x"]]), y = paste(p1[["labels"]][["y"]]))+
+    facet_grid(.~grade)
+
+#divergence
+divergence <- divergence(physeq.tib.fec.p)
+meta.d<- cbind(divergence, meta(physeq.tib.fec.p))
+
+pd<- ggplot(meta.d, aes(x=stage, y=divergence), shape=8 ) +
+    geom_boxplot(aes(x=stage, fill=stage), notch=FALSE) +
+    stat_summary(aes(x=stage), fun.y=mean, geom="point") +
+    geom_jitter(width=0.2) +
+    scale_fill_manual(values=col)+
+    theme(axis.title.x =element_blank())+ #设置x.y标题上文本的名称
+    theme(axis.text.x = element_text(size=12),axis.text.y = element_text(size=12)) + # 设置x.y坐标上文本大小
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + #不显示网格线
+    theme(legend.title = element_blank())+ # 不显示图例的标题
+    theme(legend.position='none')+
+    theme(title=element_text(size=18,color="#4F4F4F"))+
+    theme(plot.title = element_text(hjust = 0.5))+
+    labs(y="Divergence")+
+    facet_grid(.~grade)+
+    stat_compare_means(comparisons = my_comparisons, paired = FALSE, label = "p.signif", color="red", method = "wilcox.test")
+
+#lmm
+pi<- ggplot(meta.d, aes(x = stage, y = divergence, group= grade, colour=grade)) +
+    geom_point(alpha=0.6)+
+    scale_colour_manual(values=col2) +  
+    geom_smooth(size=2)+ 
+    geom_jitter(width=0.2)+
+    labs(y= "Divergence", x="")+
+    theme(axis.text.x = element_text(size=12),axis.text.y = element_text(size=12)) +
+    theme(legend.title = element_blank())+ 
+    theme(title=element_text(size=14,color="#4F4F4F"))+
+    theme(legend.position="none")
+
+data1<-  subset(meta.d,grade %in% c("grade_17", "grade_18"))
+m1.nlme = lme(divergence ~ grade*stage,
+              random = ~ 1|student.id,
+              data = data1)
+anova(m1.nlme)
+
+data2<-  subset(meta.d,stage %in% c("stage1", "stage2", "stage3"))
+
+m2.nlme = lme(divergence ~ grade*stage,
+              random = ~ 1|student.id,
+              data = data2)
+anova(m2.nlme)
+
+pb / pd
+
+ps / pi
+
+#Community types
+genus.p = tax_glom(physeq.tib.fec.p, "Genus")
+pseq.comp <- microbiome::transform(genus.p, "compositional")
+taxa <- core_members(pseq.comp, detection = 0.1/100, prevalence = 50/100)
+pseq <- prune_taxa(taxa, genus.p)
+gp<- cbind(tax_table(pseq)[, 6], pseq@otu_table@.Data)
+rownames(gp)=gp[,1]
+gp1<- gp[,-1]
+gp2<- apply(gp1,2,as.numeric)
+rownames(gp2)<- rownames(gp1)
+count <- as.matrix(t(gp2))
+fit <- mclapply(1:3, dmn, count = count, verbose=TRUE)
+lplc <- sapply(fit, laplace) # AIC / BIC / Laplace
+aic  <- sapply(fit, AIC) # AIC / BIC / Laplace
+bic  <- sapply(fit, BIC) # AIC / BIC / Laplace
+#plot(lplc, type="b", xlab="Number of Dirichlet Components", ylab="Model Fit")
+#lines(aic, type="b", lty = 2)
+#lines(bic, type="b", lty = 3)
+best <- fit[[which.min(lplc)]]
+mixturewt(best)
+ass <- apply(mixture(best), 1, which.max)
+for (k in seq(ncol(fitted(best)))) {
+  d <- melt(fitted(best))
+  colnames(d) <- c("OTU", "cluster", "value")
+  d <- subset(d, cluster == k) %>%
+     # Arrange OTUs by assignment strength
+     arrange(value) %>%
+     mutate(OTU = factor(OTU, levels = unique(OTU))) %>%
+     # Only show the most important drivers
+     filter(abs(value) > quantile(abs(value), 0.8))     
+
+  p <- ggplot(d, aes(x = OTU, y = value)) +
+       geom_bar(stat = "identity") +
+       coord_flip() +
+       labs(title = paste("Top drivers: community type", k))
+  print(p)
+}
+
+##plot community
+ra100.genus.p  = transform_sample_counts(genus.p, function(x) x *100 / sum(x) )
+rp<- cbind(tax_table(ra100.genus.p)[, 6], ra100.genus.p@otu_table@.Data)
+rownames(rp)=rp[,1]
+rp1<- rp[,-1]
+rp2<- apply(rp1,2,as.numeric)
+rownames(rp2)<- rownames(rp1)
+rp3<- t(rp2)
+sub_bac<- rp3[, c("g_Prevotella", "g_Neisseria", "g_Streptococcus")]
+data01<- cbind(ass, meta(pseq))
+data02<- cbind(sub_bac, data01)
+data03<- cbind(ass, sub_bac)
+names <- rownames(data03)
+rownames(data03) <- NULL
+data <- cbind(names,data03)
+data<- data.frame(data)
+data$ass<- as.integer(data$ass)
+mydata<-melt(data,id.vars=c("names", "ass"),variable.name="Genus",value.name="abundance")
+mydata$abundance <- as.numeric(mydata$abundance) 
+
+ggplot(mydata, aes(x=Genus, y=abundance), shape=8 ) +
+    geom_boxplot(aes(x=Genus, fill=Genus), notch=FALSE) +
+    stat_summary(aes(x=Genus), fun.y=mean, geom="point") +
+    geom_jitter(width=0.2) +
+    scale_fill_manual(values=c("#F8766D", "#A3A500", "#00BF7D"))+
+    theme(axis.title.x =element_blank())+ #设置x.y标题上文本的名称
+    theme(axis.text.x = element_text(size=14),axis.text.y = element_text(size=14)) + # 设置x.y坐标上文本大小
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + #不显示网格线
+    theme(legend.title = element_blank())+ # 不显示图例的标题
+    theme(legend.position='none')+
+    theme(title=element_text(size=18,color="#4F4F4F"))+
+    theme(plot.title = element_text(hjust = 0.5))+
+    labs(y="Relative Aboundance %")+
+    labs(title="Community Types")+
+    facet_grid(.~ass)+
+    theme(axis.text.x = element_text(angle=30, hjust=1, vjust=1))
+
+ggplot(data02,aes(x=stage)) + 
+    geom_bar(aes(fill=factor(ass)),position="fill")+
+    facet_grid(.~grade) + #不显示网格线
+    theme(legend.title = element_blank())+
+    theme(axis.text.x = element_text(angle=60, hjust=1, vjust=1))+ 
+    theme(axis.text.x = element_text(size=12),axis.text.y = element_text(size=12))+
+    theme(axis.title.x =element_blank(),axis.title.y =element_blank())+
+    scale_fill_manual(values=c("#5b8c85", "#434e52", "#b0a160"))
+
+
+##phyloseq to lefse
+##lefse with phyloseq data
+library(yingtools2)
+lefse(physeq.BALp, class="run", levels = "Genus")
+
+## go to terminal
+# mkdir lefse.res
+# set as Working DIR
+# cp C:\Users\lihui\Desktop\test\lefse.bat ./
+# mv ../lefse.txt ./
+# lefse.bat
+
+
+## plot bac
+re100.physeq.BALp  = transform_sample_counts(physeq.BALp, function(x) x *100 / sum(x) )
+bac_sub = subset_taxa(re100.physeq.BALp, Genus=="g_Veillonella")
+Veillonella<- colSums(bac_sub@otu_table@.Data)
+data01 <- t(rbind(Veillonella, t(physeq.BALp@sam_data[,"run"] )))
+data01 <- as.data.frame(data01)
+data01$Veillonella=as.numeric(levels(data01$Veillonella))[data01$Veillonella]
+
+p1<- ggplot(data01, aes(x=run, y=Veillonella), shape=8 ) +
+     geom_boxplot(aes(x=run, fill=run), notch=FALSE) +
+     stat_summary(aes(x=run), fun.y=mean, geom="point") +
+     geom_jitter(width=0.2) +
+     scale_fill_manual(values=c("#F8766D", "#A3A500", "#00BF7D", "#00B0F6", "#E76BF3"))+
+     theme(axis.title.x =element_blank())+ #设置x.y标题上文本的名称
+     theme(axis.text.x = element_text(size=14),axis.text.y = element_text(size=14)) + # 设置x.y坐标上文本大小
+     theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + #不显示网格线
+     theme(legend.title = element_blank())+ # 不显示图例的标题
+     theme(legend.position='none')+
+     theme(title=element_text(size=18,color="#4F4F4F"))+
+     theme(plot.title = element_text(hjust = 0.5))+
+     labs(y="Relative Aboundance %")+
+     labs(title="Veillonella in BAL")
+
+split1 <- p1 + coord_cartesian(ylim = c(0, 4.5)) + 
+    theme(legend.position='none')
+split2 <- p1 + coord_cartesian(ylim = c(8, 80)) + 
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = 'none')
+grid.newpage()
+plot_site1 <- viewport(x = 0, y = 0, width = 1, height = 0.5, just = c('left', 'bottom'))
+plot_site2 <- viewport(x = 0, y = 0.45, width = 1, height = 0.5, just = c('left', 'bottom'))
+print(split1, vp = plot_site1)
+print(split2, vp = plot_site2)
+
+
+```
+
+```{r}
+library(microbiome)
+library(ggplot2)
+library(plyr)
+library(readr)
+library(reshape2)
+library(patchwork)
+library(picante)
+library(RColorBrewer)
+library(GUniFrac) #rarefy
+
+otu <- read.csv('C:/Users/lihui/Desktop/tiv16sall/lefse.res.oroph/ra.genus.csv',header = T, sep = ',',row.names = 1)
+
+metadata<- read.csv('C:/Users/lihui/Desktop/tiv16sall/lefse.res/metadata.csv',header = T, sep = ',',row.names = 1)
+sub_metadata<- metadata[colnames(otu),]
+
+stage1 <- subset(sub_metadata, stage %in% c("stage1"))
+stage2 <- subset(sub_metadata, stage %in% c("stage2"))
+stage3 <- subset(sub_metadata, stage %in% c("stage3"))
+stage4 <- subset(sub_metadata, stage %in% c("stage4"))
+stage5 <- subset(sub_metadata, stage %in% c("stage5"))
+
+pseq.rel1<- otu[, rownames(stage1)]
+pseq.rel2<- otu[, rownames(stage2)]
+pseq.rel3<- otu[, rownames(stage3)]
+pseq.rel4<- otu[, rownames(stage4)]
+pseq.rel5<- otu[, rownames(stage5)]
+
+core.taxa.standard1 <- core_members(pseq.rel1, detection = 1e-4, prevalence = 95/100)
+core.taxa.standard2 <- core_members(pseq.rel2, detection = 1e-4, prevalence = 95/100)
+core.taxa.standard3 <- core_members(pseq.rel3, detection = 1e-4, prevalence = 95/100)
+core.taxa.standard4 <- core_members(pseq.rel4, detection = 1e-4, prevalence = 95/100)
+core.taxa.standard5 <- core_members(pseq.rel5, detection = 1e-4, prevalence = 95/100)
+
+c1<-union(core.taxa.standard1,core.taxa.standard2)
+c2<-union(core.taxa.standard3,core.taxa.standard4)
+c12<- union(c1,c2)
+c<- union(c12,core.taxa.standard5)
+
+prevalences <- seq(.05, 1, .05)
+detections <- 10^seq(log10(1e-4), log10(max(abundances(pseq.rel1))), length = 50)
+
+pseq.rel1c<- pseq.rel1[c,]
+pseq.rel2c<- pseq.rel2[c,]
+pseq.rel3c<- pseq.rel3[c,]
+pseq.rel4c<- pseq.rel4[c,]
+pseq.rel5c<- pseq.rel5[c,]
+
+pc <- plot_core(pseq.rel1c, plot.type = "heatmap", 
+                prevalences = prevalences,
+                detections = detections,
+                colours = rev(brewer.pal(5, "Spectral")),
+                horizontal = TRUE)+
+                theme(axis.text.x = element_text(angle=90, hjust=1, vjust=.5,size=14), axis.title.x=element_blank()) +
+                theme(title=element_blank())+
+                theme(legend.position='none')
+
+p2 <- plot_core(pseq.rel2c, plot.type = "heatmap", 
+                prevalences = prevalences,
+                detections = detections,
+                colours = rev(brewer.pal(5, "Spectral")),
+                horizontal = TRUE,taxa.order = pc[["plot_env"]][["o"]])+ 
+                theme(axis.text.x = element_blank(), axis.title.x=element_blank())+
+                theme(title=element_text(size=18, color="#4F4F4F") )+
+                theme(legend.title = element_blank())+
+                theme(title=element_blank())+
+                theme(legend.position='none')  
+
+p3 <- plot_core(pseq.rel3c, plot.type = "heatmap", 
+                prevalences = prevalences,
+                detections = detections,
+                colours = rev(brewer.pal(5, "Spectral")),
+                horizontal = TRUE,taxa.order = pc[["plot_env"]][["o"]])+ 
+                theme(axis.text.x = element_blank(), axis.title.x=element_blank())+
+                theme(title=element_text(size=18, color="#4F4F4F") )+
+                theme(legend.title = element_blank())+
+                theme(title=element_blank())+
+                theme(legend.position='none') 
+
+p4 <- plot_core(pseq.rel4c, plot.type = "heatmap", 
+                prevalences = prevalences,
+                detections = detections,
+                colours = rev(brewer.pal(5, "Spectral")),
+                horizontal = TRUE,taxa.order = pc[["plot_env"]][["o"]])+ 
+                theme(axis.text.x = element_blank(), axis.title.x=element_blank())+
+                theme(title=element_text(size=18, color="#4F4F4F") )+
+                theme(legend.title = element_blank())+
+                theme(title=element_blank())+
+                theme(legend.position='none') 
+
+p5 <- plot_core(pseq.rel5c, plot.type = "heatmap", 
+                prevalences = prevalences,
+                detections = detections,
+                colours = rev(brewer.pal(5, "Spectral")),
+                horizontal = TRUE,taxa.order = pc[["plot_env"]][["o"]])+ 
+                theme(axis.text.x = element_blank(), axis.title.x=element_blank())+
+                theme(title=element_text(size=18, color="#4F4F4F") )+
+                theme(legend.title = element_blank())+
+                theme(title=element_blank())+
+                theme(legend.position='none')
+
+p5 / p4 / p3 / p2 / pc
+
+```
+
+
